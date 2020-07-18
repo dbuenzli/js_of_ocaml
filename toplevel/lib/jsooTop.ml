@@ -17,7 +17,18 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *)
 
-open Js_of_ocaml
+type js_t
+external js_repr : 'a -> js_t = "%identity"
+external js_eval_string : string -> 'a = "caml_js_eval_string"
+external js_pure_js_expr : string -> 'a = "caml_pure_js_expr"
+external js_call : js_t -> string -> js_t array -> 'a = "caml_js_meth_call"
+external js_set : js_t -> string -> js_t -> unit = "caml_js_set"
+external js_to_string : js_t -> string = "caml_string_of_jsstring"
+external js_create_file : name:string -> content:string -> unit =
+  "caml_create_file"
+
+let js_global : js_t = js_pure_js_expr "joo_global_object"
+
 open Js_of_ocaml_compiler
 open Js_of_ocaml_compiler.Stdlib
 
@@ -64,7 +75,7 @@ let setup =
        let prims = split_primitives (Symtable.data_primitive_names ()) in
        let unbound_primitive p =
          try
-           ignore (Js.Unsafe.eval_string p);
+           ignore (js_eval_string p);
            false
          with _ -> true
        in
@@ -84,24 +95,26 @@ let setup =
        flush stderr;
        let res = Buffer.contents b in
        let res = String.concat ~sep:"" !stubs ^ res in
-       let res : unit -> _ = Js.Unsafe.global##toplevelEval (res : string) in
+       let res : unit -> _ =
+         js_call js_global "toplevelEval" [| js_repr res |] in
        res
      in
-     Js.Unsafe.global##.toplevelCompile := compile (*XXX HACK!*);
-     (Js.Unsafe.global##.toplevelEval
-     := fun (x : string) ->
-     let f : < .. > Js.t -> < .. > Js.t = Js.Unsafe.eval_string x in
-     fun () ->
-       let res = f Js.Unsafe.global in
-       Format.(pp_print_flush std_formatter ());
-       Format.(pp_print_flush err_formatter ());
-       flush stdout;
-       flush stderr;
-       res);
-     Js.Unsafe.global##.toplevelReloc
-     := Js.Unsafe.callback (fun name ->
-            let name = Js.to_string name in
-            Js_of_ocaml_compiler.Ocaml_compiler.Symtable.reloc_ident name);
+     js_set js_global "toplevelCompile" (js_repr compile (*XXX HACK!*));
+     (js_set js_global "toplevelEval"
+        (js_repr @@
+         fun (x : string) ->
+         let f : js_t -> js_t = js_eval_string x in
+         fun () ->
+           let res = f js_global in
+           Format.(pp_print_flush std_formatter ());
+           Format.(pp_print_flush err_formatter ());
+           flush stdout;
+           flush stderr;
+           res));
+     js_set js_global "toplevelReloc"
+       (js_repr @@ fun name ->
+        let name = js_to_string name in
+        Js_of_ocaml_compiler.Ocaml_compiler.Symtable.reloc_ident name);
      ())
 
 let refill_lexbuf s p ppf buffer len =
@@ -126,7 +139,7 @@ let refill_lexbuf s p ppf buffer len =
 let use ffp content =
   let name = "/dev/fake_stdin" in
   if Sys.file_exists name then Sys.remove name;
-  Sys_js.create_file ~name ~content;
+  js_create_file ~name ~content;
   Toploop.use_silently ffp name
 
 let execute printval ?pp_code ?highlight_location pp_answer s =
